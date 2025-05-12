@@ -4,8 +4,9 @@ import pandas as pd
 import pulp
 import math
 import altair as alt
+from route_data import routes, cities_coords # Assuming route_data.py is in the same directory
 
-# --- START OF COPIED/ADAPTED CORE LOGIC (from your provided script) ---
+# --- START OF ADAPTED CORE LOGIC (from your provided script) ---
 # --- (Normally this would be in fuel_optimizer_core.py and imported) ---
 
 # --- 1. Data Structures (Using Gallons and Miles) ---
@@ -41,6 +42,7 @@ def load_stations_and_endpoint_from_excel(file_path, sheet_name=0, endpoint_stor
         log_messages.append(f"Successfully read Excel file. Columns found: {df.columns.tolist()}")
     except FileNotFoundError:
         log_messages.append(f"Error: Excel file not found at {file_path}")
+        st.error(f"Error: Excel file not found at {file_path}. Please upload a valid file.")
         return [], None, log_messages
     except Exception as e:
         log_messages.append(f"Error reading Excel file: {e}")
@@ -338,12 +340,13 @@ st.title("🚚 Truck Fuel Optimization Tool")
 with st.sidebar:
     st.header("Input Parameters")
 
-    uploaded_file = st.file_uploader("Upload Excel Fuel Station Data", type=["xlsx"])
-    default_excel_file = 'fresno_to_cheshire_stations.xlsx' # Default if no upload
-
-    st.info(f"Ensure your Excel file has columns: 'Store No', 'City', 'Distance from Fresno (miles)', 'Best Discounted Price'. The 'Distance' is from a common origin (e.g., Fresno at 0 miles).")
+    #uploaded_file = ""
     
-    endpoint_store_no = st.text_input("Endpoint 'Store No' in Excel", "-1", help="The 'Store No' that identifies your destination in the Excel file.")
+    selected_route_name = st.selectbox("Choose a Route:", list(routes.keys())) 
+    default_excel_file = routes[selected_route_name]['default_file'] if selected_route_name in routes else None
+    st.info(f"Default Excel file for this route: {default_excel_file}")
+   
+    endpoint_store_no = -1 #st.text_input("Endpoint 'Store No' in Excel", "-1", help="The 'Store No' that identifies your destination in the Excel file.")
 
     st.subheader("Truck Parameters")
     truck_name = st.text_input("Truck Name/ID", "FreightlinerImperial")
@@ -352,10 +355,10 @@ with st.sidebar:
     gpm = 1.0 / truck_mpg if truck_mpg > 0 else 0.2 # gallons per mile
 
     st.subheader("Route Parameters")
-    fresno_origin_miles = 0.0 # Assuming Fresno is always the start at 0 miles as per Excel column.
+    origin_miles = 0.0 # Assuming Fresno is always the start at 0 miles as per Excel column.
     start_fuel = st.number_input("Starting Fuel (Gallons)", min_value=0.0, max_value=truck_tank_cap, value=100.0, step=5.0)
     desired_end_fuel = st.number_input("Desired Fuel at Destination (Gallons)", min_value=0.0, max_value=truck_tank_cap, value=150.0, step=5.0)
-    safety_buffer = st.number_input("Safety Buffer Fuel (Gallons)", min_value=0.0, max_value=truck_tank_cap/2, value=50.0, step=5.0)
+    safety_buffer = st.number_input("Safety Buffer Fuel (Gallons)", min_value=0.0, max_value=truck_tank_cap/2, value=70.0, step=5.0)
     max_stops = st.number_input("Max Refueling Stops Allowed", min_value=0, max_value=20, value=7, step=1)
 
     run_button = st.button("Run Optimization")
@@ -369,43 +372,43 @@ if run_button:
     all_logs = []
     log_placeholder.info("Starting process...")
 
-    excel_to_load = uploaded_file if uploaded_file is not None else default_excel_file
-    if uploaded_file is None and default_excel_file:
+    excel_to_load = default_excel_file
+    if default_excel_file is None :
         all_logs.append(f"No file uploaded, using default: {default_excel_file}")
     
-    all_fuel_stations, cheshire_endpoint, load_logs = load_stations_and_endpoint_from_excel(excel_to_load, endpoint_store_no=endpoint_store_no)
+    all_fuel_stations, city_endpoint, load_logs = load_stations_and_endpoint_from_excel(excel_to_load)
     all_logs.extend(load_logs)
 
-    if not cheshire_endpoint:
+    if not city_endpoint:
         all_logs.append(f"CRITICAL: Endpoint (Store No = {endpoint_store_no}) not found. Cannot define route.")
         st.error(f"CRITICAL: Endpoint (Store No = {endpoint_store_no}) not found. Cannot define route. Check logs.")
         log_placeholder.text("\n".join(all_logs))
         st.stop() # Stop further execution for this run
 
-    all_logs.append(f"Detected Endpoint: Name='{cheshire_endpoint['name']}', Location={cheshire_endpoint['location_miles']:.2f} miles.")
+    all_logs.append(f"Detected Endpoint: Name='{city_endpoint['name']}', Location={city_endpoint['location_miles']:.2f} miles.")
     all_logs.append(f"Total actual fuel stations loaded: {len(all_fuel_stations)}")
     if not all_fuel_stations:
          all_logs.append(f"Warning: No actual fuel stations were loaded. Check data and column names.")
 
     my_truck = Truck(name=truck_name, tank_capacity_gal=truck_tank_cap, avg_consumption_gal_per_mile=gpm)
 
-    route_end_miles = cheshire_endpoint['location_miles']
-    station_ids_for_route = [s.id for s in all_fuel_stations if s.location_miles < route_end_miles and s.location_miles >= fresno_origin_miles]
+    route_end_miles = city_endpoint['location_miles']
+    station_ids_for_route = [s.id for s in all_fuel_stations if s.location_miles < route_end_miles and s.location_miles >= origin_miles]
     
     current_route = Route(
-        name=f"Fresno_to_{cheshire_endpoint['name']}",
-        start_location_miles=fresno_origin_miles,
+        name=selected_route_name,
+        start_location_miles=origin_miles,
         end_location_miles=route_end_miles,
         station_ids_in_order=station_ids_for_route
     )
-    all_logs.append(f"Defined Route: {current_route.name} from {current_route.start_location_miles:.2f} miles to {current_route.end_location_miles:.2f} miles (Destination: {cheshire_endpoint['name']})")
+    all_logs.append(f"Defined Route: {current_route.name} from {current_route.start_location_miles:.2f} miles to {current_route.end_location_miles:.2f} miles (Destination: {city_endpoint['name']})")
     all_logs.append(f"Number of fuel stations selected for this route (before destination): {len(station_ids_for_route)}")
     if not station_ids_for_route and current_route.end_location_miles > 0 :
          all_logs.append("Warning: No fuel stations identified on the route before the destination.")
 
 
     all_logs.append(f"Truck: {my_truck.name}, Capacity={my_truck.tank_capacity_gal:.1f} Gal, Consumption={my_truck.avg_consumption_gal_per_mile:.4f} Gal/Mile ({1/my_truck.avg_consumption_gal_per_mile:.1f} MPG)")
-    all_logs.append(f"Fuel Parameters: Start={start_fuel:.1f} Gal, Desired End at {cheshire_endpoint['name']}={desired_end_fuel:.1f} Gal, Safety Buffer={safety_buffer:.1f} Gal")
+    all_logs.append(f"Fuel Parameters: Start={start_fuel:.1f} Gal, Desired End at {city_endpoint['name']}={desired_end_fuel:.1f} Gal, Safety Buffer={safety_buffer:.1f} Gal")
     all_logs.append(f"Constraints: Max Refueling Stops Allowed={max_stops}")
     
     log_placeholder.text("\n".join(all_logs) + "\nRunning PuLP optimizer...")
