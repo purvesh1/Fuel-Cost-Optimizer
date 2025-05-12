@@ -7,3 +7,6 @@ geopy>=2.3.0
 shapely>=2.0.0
 openrouteservice>=2.3.0
 streamlit-folium>=0.7.0
+pulp
+openpyxl
+altair
