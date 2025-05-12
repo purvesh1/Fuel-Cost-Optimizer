@@ -4,7 +4,7 @@
 cities_coords = {
     'Fresno, CA': (-119.7871, 36.7378),
     'Cheshire, CT': (-72.9106, 41.5084),
-    'Maryland': (-76.6413, 39.0458),
+    'Baltimore, MD': (-76.6413, 39.0458),
     'Chicago, IL': (-87.6298, 41.8781),
     'Sacramento, CA': (-121.4944, 38.5816),
     'Los Angeles, CA': (-118.2437, 34.0522),
@@ -22,12 +22,12 @@ routes = {
         'cities': ['Cheshire, CT', 'Tulsa, OK', 'Fresno, CA'],
         'default_file': 'cheshire_to_fresno_stations.xlsx'
     },
-    'Fresno to Maryland': {
-        'cities': ['Fresno, CA', 'Maryland'],
+    'Fresno to Baltimore, MD': {
+        'cities': ['Fresno, CA', 'Baltimore, MD'],
         'default_file': 'fresno_to_maryland_stations.xlsx'
     },
-    'Maryland to Fresno': {
-        'cities': ['Maryland', 'Fresno, CA'],
+    'Baltimore, MD to Fresno': {
+        'cities': ['Baltimore, MD', 'Fresno, CA'],
         'default_file': 'maryland_to_fresno_stations.xlsx'
     },
     'Fresno to Chicago': {

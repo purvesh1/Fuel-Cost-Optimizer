@@ -1,4 +1,5 @@
 # app.py
+import folium
 import streamlit as st
 import pandas as pd
 import pulp
@@ -17,11 +18,13 @@ class Truck:
         self.avg_consumption_gal_per_mile = avg_consumption_gal_per_mile
 
 class FuelStation: # Represents actual refueling stations
-    def __init__(self, id, name, location_miles, price_per_gallon):
+    def __init__(self, id, name, location_miles, price_per_gallon, latitude=None, longitude=None):
         self.id = str(id) 
         self.name = name
         self.location_miles = location_miles
         self.price_per_gallon = price_per_gallon
+        self.latitude = latitude
+        self.longitude = longitude
 
     def __repr__(self):
         return (f"FuelStation(id='{self.id}', name='{self.name}', "
@@ -53,8 +56,10 @@ def load_stations_and_endpoint_from_excel(file_path, sheet_name=0, endpoint_stor
     
     id_col = 'Store No'
     name_col_city = 'City'
-    location_col_miles_excel = 'Distance from Start (miles)'
+    location_col_miles_excel = 'Distance from Fresno (miles)'
     price_col_excel = 'Best Discounted Price'
+    latitude_col = 'Latitude'
+    longitude_col = 'Longitude'
 
     required_cols = [id_col, name_col_city, location_col_miles_excel]
     if price_col_excel not in df.columns:
@@ -93,7 +98,7 @@ def load_stations_and_endpoint_from_excel(file_path, sheet_name=0, endpoint_stor
                 else:
                     price_per_gallon = price_val
             
-            fuel_stations.append(FuelStation(id=station_id_str, name=station_name, location_miles=current_row_location_miles, price_per_gallon=price_per_gallon))
+            fuel_stations.append(FuelStation(id=station_id_str, name=station_name, location_miles=current_row_location_miles, price_per_gallon=price_per_gallon, latitude=latitude_col, longitude=latitude_col))
 
         except KeyError as e:
             log_messages.append(f"Warning: Missing expected column for row {index+2}. Error: {e}. Skipping this row.")
@@ -121,6 +126,8 @@ def optimize_fuel_stops(
     min_buffer_fuel_gal: float,
     max_refueling_stops: int,
     log_area=None): # Pass streamlit element for logging
+    start_city = routes[route.name]['cities'][0] if route.name in routes else "Unknown Start"
+    end_city = routes[route.name]['cities'][-1] if route.name in routes else "Unknown End"
 
     op_log = [] # Optimization specific logs
     def _log(msg):
@@ -132,7 +139,7 @@ def optimize_fuel_stops(
 
 
     pois = []
-    pois.append({'id': 'start', 'name': 'Start Route', 'location_miles': route.start_location_miles, 'price_per_gallon': 0, 'is_station': False})
+    pois.append({'id': 'start', 'name': 'Start Route', 'location_miles': route.start_location_miles, 'price_per_gallon': 0, 'latitude': cities_coords[start_city][0], 'longitude': cities_coords[start_city][1], 'is_station': False})
     
     route_specific_stations_objects = []
     if all_stations_data:
@@ -158,10 +165,12 @@ def optimize_fuel_stops(
             'name': station.name, 
             'location_miles': station.location_miles, 
             'price_per_gallon': station.price_per_gallon, 
+            'latitude': station.latitude,
+            'longitude': station.longitude,
             'is_station': True
         })
 
-    pois.append({'id': 'end', 'name': 'End Route (Destination)', 'location_miles': route.end_location_miles, 'price_per_gallon': 0, 'is_station': False})
+    pois.append({'id': 'end', 'name': 'End Route (Destination)', 'location_miles': route.end_location_miles, 'price_per_gallon': 0,'latitude': cities_coords[end_city][0], 'longitude': cities_coords[end_city][1], 'is_station': False})
     
     unique_pois_dict = {}
     for p in sorted(pois, key=lambda x: (x['location_miles'], not x['is_station'])):
@@ -316,7 +325,9 @@ def optimize_fuel_stops(
                     'fuel_purchased_gal': round(pur_fuel,2),
                     'fuel_after_purchase_gal': round(dep_fuel,2),
                     'price_per_gallon': pois[i]['price_per_gallon'],
-                    'cost_for_stop': round(cost_at_stop,2)
+                    'cost_for_stop': round(cost_at_stop,2),
+                    'station_latitude': pois[i]['latitude'],
+                    'station_longitude': pois[i]['longitude']
                 })
         solution['full_plan_table_data'] = detailed_plan_for_table
         
@@ -557,6 +568,26 @@ if run_button:
 
         # Map of route with stations
         st.subheader("Route Map with Stations")
+
+        # pois.append({'id': 'end', 'name': 'End Route (Destination)', 'location_miles': route.end_location_miles, 'price_per_gallon': 0,'latitude': cities_coords[end_city][0], 'longitude': cities_coords[end_city][1], 'is_station': False})
+    
+        map_data = pd.DataFrame(pois_used)
+
+        m = folium.Map(location=[map_data['latitude'].mean(), map_data['longitude'].mean()], zoom_start=5)
+
+        for _, row in stations.iterrows():
+            norm = (row['Best Discounted Price'] - price_min) / (price_max - price_min)
+            color = mcolors.rgb2hex(plt.cm.YlOrRd(norm))
+            folium.CircleMarker(
+                location=(row.geometry.y, row.geometry.x),
+                radius=5,
+                popup=f"{row['City']}, {row['State']}\n${row['Best Discounted Price']:.2f}",
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.7
+            ).add_to(m)
+
 
     else:
         st.error("Optimization failed or no solution found. Check logs for details.")
