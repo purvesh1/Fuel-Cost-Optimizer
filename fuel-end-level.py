@@ -81,7 +81,7 @@ for name, cities in selected_routes.items():
     folium.GeoJson(geom, name=name, style_function=lambda x: {'color': 'blue', 'weight': 3}).add_to(m)
 
     line = LineString(geom['coordinates'])
-    buffer = line.buffer(5000 / 111139)  # ~50km buffer
+    buffer = line.buffer(500 / 111139)  # ~50km buffer
     stations_gdf['on_this_route'] = stations_gdf.geometry.within(buffer)
     stations = stations_gdf[stations_gdf['on_this_route']].copy()
 
@@ -112,6 +112,7 @@ for name, cities in selected_routes.items():
             fill_color=color,
             fill_opacity=0.7
         ).add_to(m)
+
 
 # Display map
 st_data = st_folium(m, width=900, height=600)
