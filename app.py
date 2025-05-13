@@ -608,18 +608,12 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
         map_data = pd.DataFrame(pois_used)
 
 
-        # Calculate mean coordinates, handling potential NaNs
-        center_lat = map_data['latitude'].mean(skipna=True)
-        center_lon = map_data['longitude'].mean(skipna=True)
+        # Option to use center of US instead
+        us_center_lat = 39.8283
+        us_center_lon = -88.5795
 
-        # Check if centering coordinates are valid
-        if pd.isna(center_lat) or pd.isna(center_lon):
-            st.warning("Could not determine map center coordinates. Using a default location.")
-            # Fallback to a default location if mean calculation failed
-            m = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
-        else:
-            # Initialize the map centered on the mean coordinates of all points of interest
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
+        # Use US center if requested or if mean coordinates are invalid
+        m = folium.Map(location=[us_center_lat, us_center_lon], zoom_start=4)
 
         # Ensure price_min and price_max are available.
         price_min = 2.5
@@ -719,6 +713,34 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
                     fill_color=fill_color,
                     fill_opacity=0.7
                 ).add_to(m)
+
+
+                # Highlight the actual refueling stops from the optimization solution
+                for stop in solution_data['stops']:
+                    # Use a more prominent marker for optimized refueling stops
+                    folium.Marker(
+                        location=(stop['station_latitude'], stop['station_longitude']),
+                        popup=f"""<b>⛽ REFUEL HERE: {stop['station_name']}</b><br>
+                                  Price: ${stop['price_per_gallon']:.3f}/Gal<br>
+                                  Location: {stop['location_miles']:.2f} miles<br>
+                                  <hr>
+                                  Arrival Fuel: {stop['fuel_at_arrival_gal']:.2f} Gal<br>
+                                  <b>Purchase: {stop['fuel_purchased_gal']:.2f} Gal</b><br>
+                                  Departure Fuel: {stop['fuel_after_purchase_gal']:.2f} Gal<br>
+                                  <b>Cost: ${stop['cost_for_stop']:.2f}</b>""",
+                        icon=folium.Icon(color='green', icon='gas-pump', prefix='fa')
+                    ).add_to(m)
+                    
+                    # Add a circle to make it even more visible
+                    folium.CircleMarker(
+                        location=(stop['station_latitude'], stop['station_longitude']),
+                        radius=7,
+                        color='green',
+                        fill=True,
+                        fill_color='blue',
+                        fill_opacity=0.3,
+                        weight=2
+                    ).add_to(m)
 
         # Add the route line to the map (assuming 'geom' from OpenRouteService is available)
         # This part was in your original code snippet, ensure it's placed before st_folium
