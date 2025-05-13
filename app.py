@@ -1,10 +1,14 @@
 # app.py
+import folium
+import matplotlib.colors
+import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
 import pulp
 import math
 import altair as alt
 from route_data import routes, cities_coords # Assuming route_data.py is in the same directory
+from streamlit_folium import st_folium
 
 # --- START OF ADAPTED CORE LOGIC (from your provided script) ---
 # --- (Normally this would be in fuel_optimizer_core.py and imported) ---
@@ -17,15 +21,18 @@ class Truck:
         self.avg_consumption_gal_per_mile = avg_consumption_gal_per_mile
 
 class FuelStation: # Represents actual refueling stations
-    def __init__(self, id, name, location_miles, price_per_gallon):
+    def __init__(self, id, name, location_miles, price_per_gallon, latitude, longitude):
         self.id = str(id) 
         self.name = name
         self.location_miles = location_miles
         self.price_per_gallon = price_per_gallon
+        self.latitude = latitude
+        self.longitude = longitude
 
     def __repr__(self):
         return (f"FuelStation(id='{self.id}', name='{self.name}', "
-                f"location_miles={self.location_miles:.2f}, price_per_gallon={self.price_per_gallon:.3f})")
+                f"location_miles={self.location_miles:.2f}, price_per_gallon={self.price_per_gallon:.3f}, "
+                f"latitude={self.latitude:.3f}, longitude={self.longitude:.3f})")
 
 class Route:
     def __init__(self, name, start_location_miles, end_location_miles, station_ids_in_order):
@@ -35,6 +42,7 @@ class Route:
         self.station_ids_in_order = [str(sid) for sid in station_ids_in_order]
 
 # --- Helper function to load stations and identify endpoint from Excel ---
+@st.cache_data
 def load_stations_and_endpoint_from_excel(file_path, sheet_name=0, endpoint_store_no="-1"):
     log_messages = []
     try:
@@ -55,6 +63,8 @@ def load_stations_and_endpoint_from_excel(file_path, sheet_name=0, endpoint_stor
     name_col_city = 'City'
     location_col_miles_excel = 'Distance from Start (miles)'
     price_col_excel = 'Best Discounted Price'
+    latitude_col = 'Latitude'
+    longitude_col = 'Longitude'
 
     required_cols = [id_col, name_col_city, location_col_miles_excel]
     if price_col_excel not in df.columns:
@@ -92,8 +102,7 @@ def load_stations_and_endpoint_from_excel(file_path, sheet_name=0, endpoint_stor
                     log_messages.append(f"Warning: Station ID {station_id_str} (row {index+2}) has invalid or non-positive price: '{row[price_col_excel]}'. Assuming $0.0/Gal.")
                 else:
                     price_per_gallon = price_val
-            
-            fuel_stations.append(FuelStation(id=station_id_str, name=station_name, location_miles=current_row_location_miles, price_per_gallon=price_per_gallon))
+            fuel_stations.append(FuelStation(id=station_id_str, name=station_name, location_miles=current_row_location_miles, price_per_gallon=price_per_gallon, latitude=row[latitude_col], longitude=row[longitude_col]))
 
         except KeyError as e:
             log_messages.append(f"Warning: Missing expected column for row {index+2}. Error: {e}. Skipping this row.")
@@ -121,6 +130,9 @@ def optimize_fuel_stops(
     min_buffer_fuel_gal: float,
     max_refueling_stops: int,
     log_area=None): # Pass streamlit element for logging
+    
+    start_city = routes[route.name]['cities'][0] if route.name in routes else "Unknown Start"
+    end_city = routes[route.name]['cities'][-1] if route.name in routes else "Unknown End"
 
     op_log = [] # Optimization specific logs
     def _log(msg):
@@ -130,10 +142,9 @@ def optimize_fuel_stops(
         else:
             print(msg)
 
-
     pois = []
-    pois.append({'id': 'start', 'name': 'Start Route', 'location_miles': route.start_location_miles, 'price_per_gallon': 0, 'is_station': False})
-    
+    pois.append({'id': 'start', 'name': 'Start Route', 'location_miles': route.start_location_miles, 'price_per_gallon': 0, 'latitude': float(cities_coords[start_city][0]), 'longitude': float(cities_coords[start_city][1]), 'is_station': False})
+        
     route_specific_stations_objects = []
     if all_stations_data:
         for station_id_on_route in route.station_ids_in_order:
@@ -149,19 +160,21 @@ def optimize_fuel_stops(
                 _log(f"Warning: Station ID '{station_id_on_route}' defined in route '{route.name}' not found in the provided list of all_stations_data.")
     else:
         _log("Info: No fuel stations provided to select from for the route.")
-            
+    
     route_specific_stations_objects.sort(key=lambda s: s.location_miles)
-
     for station in route_specific_stations_objects:
+        
         pois.append({
             'id': station.id, 
             'name': station.name, 
             'location_miles': station.location_miles, 
             'price_per_gallon': station.price_per_gallon, 
+            'latitude': float(station.latitude),
+            'longitude': float(station.longitude),
             'is_station': True
         })
 
-    pois.append({'id': 'end', 'name': 'End Route (Destination)', 'location_miles': route.end_location_miles, 'price_per_gallon': 0, 'is_station': False})
+    pois.append({'id': 'end', 'name': 'End Route (Destination)', 'location_miles': route.end_location_miles, 'price_per_gallon': 0, 'latitude': float(cities_coords[start_city][0]), 'longitude': float(cities_coords[start_city][1]), 'is_station': False})
     
     unique_pois_dict = {}
     for p in sorted(pois, key=lambda x: (x['location_miles'], not x['is_station'])):
@@ -316,7 +329,9 @@ def optimize_fuel_stops(
                     'fuel_purchased_gal': round(pur_fuel,2),
                     'fuel_after_purchase_gal': round(dep_fuel,2),
                     'price_per_gallon': pois[i]['price_per_gallon'],
-                    'cost_for_stop': round(cost_at_stop,2)
+                    'cost_for_stop': round(cost_at_stop,2),
+                    'station_latitude': pois[i]['latitude'],
+                    'station_longitude': pois[i]['longitude']
                 })
         solution['full_plan_table_data'] = detailed_plan_for_table
         
@@ -427,136 +442,20 @@ if run_button:
 
 
     if solution_data and pois_used and pulp_vars:
-        st.success("Optimization Successful!")
-
-        # solution = {
-        #     'total_cost': pulp.value(prob.objective),
-        #     'truck': truck.name,
-        #     'route': route.name,
-        #     'stops_made_count': stops_made_val,
-        #     'stops': []
-        # }
-
-        # solution['stops'].append({
-        #             'station_id': pois[i]['id'],
-        #             'station_name': poi_name,
-        #             'location_miles': pois[i]['location_miles'],
-        #             'fuel_at_arrival_gal': round(arr_fuel,2),
-        #             'fuel_purchased_gal': round(pur_fuel,2),
-        #             'fuel_after_purchase_gal': round(dep_fuel,2),
-        #             'price_per_gallon': pois[i]['price_per_gallon'],
-        #             'cost_for_stop': round(cost_at_stop,2)
-        #         })
-        
-        col1, col2 = st.columns(2)
-        col1.metric("Total Fuel Cost", f"${solution_data['total_cost']:.2f}")
-        col2.metric("Refueling Stops Made", f"{solution_data['stops_made_count']:.0f} (Max: {max_stops})")
-
-        st.subheader("Fueling Plan Details")
-        # Convert list of dicts (with header as first dict) to DataFrame for st.table
-        if solution_data.get('full_plan_table_data'):
-            plan_df_data = solution_data['full_plan_table_data']
-            if len(plan_df_data) > 1:
-                plan_df = pd.DataFrame(plan_df_data[1:], columns=plan_df_data[0].values())
-                st.dataframe(plan_df)
-            else:
-                st.info("Full plan table data is empty or header only.")
-        else:
-            st.info("No detailed plan table data in solution.")
-
-
-        # --- Charting ---
-        st.subheader("Fuel Level Along Route")
-        
-        # Prepare data for Altair chart
-        chart_data_points = []
-        # Consumption segments and refuel events
-        for i in range(len(pois_used)):
-            dist_current = pois_used[i]['location_miles']
-            fuel_arrival = pulp.value(pulp_vars['arrival'][i])
-            fuel_departure = pulp.value(pulp_vars['after_purchase'][i])
-            
-            if i > 0: # Arrival at POI (from previous departure)
-                 chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_arrival, 'Series': 'Actual Fuel', 'Event': 'Arrival', 'Label': pois_used[i]['name']})
-
-            if pois_used[i]['is_station'] and pulp.value(pulp_vars['purchased'][i]) > 0.001:
-                # Point before refuel
-                chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_arrival, 'Series': 'Actual Fuel', 'Event': 'Refuel Start', 'Label': f"Buy {pulp.value(pulp_vars['purchased'][i]):.2f}G @ {pois_used[i]['name']}"})
-                # Point after refuel
-                chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_departure, 'Series': 'Actual Fuel', 'Event': 'Refuel End', 'Label': pois_used[i]['name']})
-            
-            # Departure point for segment to next POI
-            if i < len(pois_used) - 1:
-                chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_departure, 'Series': 'Actual Fuel', 'Event': 'Departure', 'Label': pois_used[i]['name']})
-            elif i == len(pois_used) -1 : # Last point (destination arrival)
-                 chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_arrival, 'Series': 'Actual Fuel', 'Event': 'Destination', 'Label': pois_used[i]['name']})
-
-
-        # Add Start Point explicitly if not covered
-        if not any(p['Distance'] == current_route.start_location_miles and p['Series'] == 'Actual Fuel' for p in chart_data_points):
-            chart_data_points.append({'Distance': current_route.start_location_miles, 'Fuel': start_fuel, 'Series': 'Actual Fuel', 'Event': 'Start', 'Label': 'Route Start'})
-        
-        # Sort by distance, then by an implicit order for refuel events
-        def sort_key(point):
-            if point['Event'] == 'Refuel Start': return (point['Distance'], 0)
-            if point['Event'] == 'Refuel End': return (point['Distance'], 2)
-            return (point['Distance'], 1)
-
-        chart_data_points.sort(key=sort_key)
-        
-        fuel_level_df = pd.DataFrame(chart_data_points)
-
-        # Context lines (Tank Capacity, Min Buffer, Desired End)
-        route_min_dist = current_route.start_location_miles
-        route_max_dist = current_route.end_location_miles
-
-        context_data = [
-            {'Distance': route_min_dist, 'Fuel': truck_tank_cap, 'Series': 'Tank Capacity'},
-            {'Distance': route_max_dist, 'Fuel': truck_tank_cap, 'Series': 'Tank Capacity'},
-            {'Distance': route_min_dist, 'Fuel': safety_buffer, 'Series': 'Min Buffer'},
-            {'Distance': route_max_dist, 'Fuel': safety_buffer, 'Series': 'Min Buffer'},
-            # Desired end fuel shown as a point/short line at destination
-            {'Distance': route_max_dist - max(1, route_max_dist*0.005) , 'Fuel': desired_end_fuel, 'Series': 'Desired End Fuel'}, # Show it slightly before end for line visibility
-            {'Distance': route_max_dist, 'Fuel': desired_end_fuel, 'Series': 'Desired End Fuel'},
-        ]
-        context_df = pd.DataFrame(context_data)
-        
-        combined_df = pd.concat([fuel_level_df, context_df])
-
-        # Base chart
-        base = alt.Chart(combined_df).encode(
-            x=alt.X('Distance:Q', title='Distance (miles)', scale=alt.Scale(zero=False)),
-            y=alt.Y('Fuel:Q', title='Fuel Level (Gallons)', scale=alt.Scale(zero=False)),
-            color=alt.Color('Series:N', legend=alt.Legend(title="Series"))
-        )
-
-        # Line chart for fuel levels and context lines
-        line_chart = base.mark_line(point=False).encode(
-             detail='Series:N' # Ensures lines are drawn per series
-        )
-        
-        # Points for specific events (e.g., refueling stops)
-        event_points = alt.Chart(fuel_level_df[fuel_level_df['Event'].isin(['Refuel Start', 'Refuel End', 'Destination', 'Start']) | (fuel_level_df['Event'].str.contains("Refuel", case=False, na=False))]).mark_point(
-            size=100, filled=True
-        ).encode(
-            x='Distance:Q',
-            y='Fuel:Q',
-            tooltip=['Distance', 'Fuel', 'Event', 'Label'],
-            shape=alt.Shape('Event:N', legend=alt.Legend(title="Events"))
-        ).interactive()
-        
-        # Text labels for refuel amounts - this is a bit tricky with Altair positioning
-        # For simplicity, rely on tooltip for refuel amounts for now.
-
-        final_chart = (line_chart + event_points).properties(
-            title='Fuel Level Dynamics Along Route',
-            height=500
-        ).interactive() # Allow zooming and panning
-
-        st.altair_chart(final_chart, use_container_width=True)
-
-        # Map of route with stations
-        st.subheader("Route Map with Stations")
+        st.session_state['solution_data'] = solution_data
+        st.session_state['pois_used'] = pois_used
+        st.session_state['pulp_vars'] = pulp_vars
+        st.session_state['current_route.name'] = current_route.name
+        st.session_state['current_route.start_location_miles'] = current_route.start_location_miles
+        st.session_state['current_route.end_location_miles'] = current_route.end_location_miles
+        st.session_state['current_route_flag'] = bool(current_route)
+        st.session_state['city_endpoint'] = city_endpoint
+        st.session_state['all_logs'] = all_logs
+        st.session_state['truck_tank_cap'] = truck_tank_cap
+        st.session_state['safety_buffer'] = safety_buffer
+        st.session_state['desired_end_fuel'] = desired_end_fuel
+        st.session_state['max_stops'] = max_stops
+        st.session_state['start_fuel'] = start_fuel
 
     else:
         st.error("Optimization failed or no solution found. Check logs for details.")
@@ -565,10 +464,275 @@ if run_button:
             all_logs.append(f"Approx fuel needed for route distance: {fuel_needed_approx:.2f} Gallons")
             max_range_on_start_fuel_approx = (start_fuel - safety_buffer) / my_truck.avg_consumption_gal_per_mile if my_truck.avg_consumption_gal_per_mile > 0 else 0
             all_logs.append(f"Approx max range on start fuel (with buffer): {max_range_on_start_fuel_approx:.2f} Miles")
-    
+
     log_placeholder.text("\n".join(all_logs)) # Display all collected logs at the end
     all_logs.append("\n--- Script finished for this run ---")
-
+        
 
 else:
     st.info("Adjust parameters in the sidebar and click 'Run Optimization'.")
+
+
+if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
+    solution_data = st.session_state['solution_data']
+    pois_used = st.session_state['pois_used']
+    pulp_vars = st.session_state['pulp_vars']
+    current_route_name = st.session_state['current_route.name']
+    current_route_start_miles = st.session_state['current_route.start_location_miles']
+    current_route_end_miles = st.session_state['current_route.end_location_miles']
+    current_route_flag =st.session_state['current_route_flag']
+    city_endpoint = st.session_state['city_endpoint']
+    all_logs = st.session_state['all_logs']
+    truck_tank_cap = st.session_state['truck_tank_cap']
+    safety_buffer = st.session_state['safety_buffer']
+    desired_end_fuel = st.session_state['desired_end_fuel']
+    max_stops = st.session_state['max_stops']
+    start_fuel = st.session_state['start_fuel']
+    
+    # Show success message
+    st.success("Optimization Successful!")
+
+    col1, col2 = st.columns(2)
+    col1.metric("Total Fuel Cost", f"${solution_data['total_cost']:.2f}")
+    col2.metric("Refueling Stops Made", f"{solution_data['stops_made_count']:.0f} (Max: {max_stops})")
+
+    st.subheader("Fueling Plan Details")
+    # Convert list of dicts (with header as first dict) to DataFrame for st.table
+    if solution_data.get('full_plan_table_data'):
+        plan_df_data = solution_data['full_plan_table_data']
+        if len(plan_df_data) > 1:
+            plan_df = pd.DataFrame(plan_df_data[1:], columns=plan_df_data[0].values())
+            st.dataframe(plan_df)
+        else:
+            st.info("Full plan table data is empty or header only.")
+    else:
+        st.info("No detailed plan table data in solution.")
+
+
+    # --- Charting ---
+    st.subheader("Fuel Level Along Route")
+    
+    # Prepare data for Altair chart
+    chart_data_points = []
+    # Consumption segments and refuel events
+    for i in range(len(pois_used)):
+        dist_current = pois_used[i]['location_miles']
+        fuel_arrival = pulp.value(pulp_vars['arrival'][i])
+        fuel_departure = pulp.value(pulp_vars['after_purchase'][i])
+        
+        if i > 0: # Arrival at POI (from previous departure)
+                chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_arrival, 'Series': 'Actual Fuel', 'Event': 'Arrival', 'Label': pois_used[i]['name']})
+
+        if pois_used[i]['is_station'] and pulp.value(pulp_vars['purchased'][i]) > 0.001:
+            # Point before refuel
+            chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_arrival, 'Series': 'Actual Fuel', 'Event': 'Refuel Start', 'Label': f"Buy {pulp.value(pulp_vars['purchased'][i]):.2f}G @ {pois_used[i]['name']}"})
+            # Point after refuel
+            chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_departure, 'Series': 'Actual Fuel', 'Event': 'Refuel End', 'Label': pois_used[i]['name']})
+        
+        # Departure point for segment to next POI
+        if i < len(pois_used) - 1:
+            chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_departure, 'Series': 'Actual Fuel', 'Event': 'Departure', 'Label': pois_used[i]['name']})
+        elif i == len(pois_used) -1 : # Last point (destination arrival)
+                chart_data_points.append({'Distance': dist_current, 'Fuel': fuel_arrival, 'Series': 'Actual Fuel', 'Event': 'Destination', 'Label': pois_used[i]['name']})
+
+
+    # Add Start Point explicitly if not covered
+    if not any(p['Distance'] == current_route_start_miles and p['Series'] == 'Actual Fuel' for p in chart_data_points):
+        chart_data_points.append({'Distance': current_route_start_miles, 'Fuel': start_fuel, 'Series': 'Actual Fuel', 'Event': 'Start', 'Label': 'Route Start'})
+    
+    # Sort by distance, then by an implicit order for refuel events
+    def sort_key(point):
+        if point['Event'] == 'Refuel Start': return (point['Distance'], 0)
+        if point['Event'] == 'Refuel End': return (point['Distance'], 2)
+        return (point['Distance'], 1)
+
+    chart_data_points.sort(key=sort_key)
+    
+    fuel_level_df = pd.DataFrame(chart_data_points)
+
+    # Context lines (Tank Capacity, Min Buffer, Desired End)
+    route_min_dist = current_route_start_miles
+    route_max_dist = current_route_end_miles
+
+    context_data = [
+        {'Distance': route_min_dist, 'Fuel': truck_tank_cap, 'Series': 'Tank Capacity'},
+        {'Distance': route_max_dist, 'Fuel': truck_tank_cap, 'Series': 'Tank Capacity'},
+        {'Distance': route_min_dist, 'Fuel': safety_buffer, 'Series': 'Min Buffer'},
+        {'Distance': route_max_dist, 'Fuel': safety_buffer, 'Series': 'Min Buffer'},
+        # Desired end fuel shown as a point/short line at destination
+        {'Distance': route_max_dist - max(1, route_max_dist*0.005) , 'Fuel': desired_end_fuel, 'Series': 'Desired End Fuel'}, # Show it slightly before end for line visibility
+        {'Distance': route_max_dist, 'Fuel': desired_end_fuel, 'Series': 'Desired End Fuel'},
+    ]
+    context_df = pd.DataFrame(context_data)
+    
+    combined_df = pd.concat([fuel_level_df, context_df])
+
+    # Base chart
+    base = alt.Chart(combined_df).encode(
+        x=alt.X('Distance:Q', title='Distance (miles)', scale=alt.Scale(zero=False)),
+        y=alt.Y('Fuel:Q', title='Fuel Level (Gallons)', scale=alt.Scale(zero=False)),
+        color=alt.Color('Series:N', legend=alt.Legend(title="Series"))
+    )
+
+    # Line chart for fuel levels and context lines
+    line_chart = base.mark_line(point=False).encode(
+            detail='Series:N' # Ensures lines are drawn per series
+    )
+    
+    # Points for specific events (e.g., refueling stops)
+    event_points = alt.Chart(fuel_level_df[fuel_level_df['Event'].isin(['Refuel Start', 'Refuel End', 'Destination', 'Start']) | (fuel_level_df['Event'].str.contains("Refuel", case=False, na=False))]).mark_point(
+        size=100, filled=True
+    ).encode(
+        x='Distance:Q',
+        y='Fuel:Q',
+        tooltip=['Distance', 'Fuel', 'Event', 'Label'],
+        shape=alt.Shape('Event:N', legend=alt.Legend(title="Events"))
+    ).interactive()
+    
+    # Text labels for refuel amounts - this is a bit tricky with Altair positioning
+    # For simplicity, rely on tooltip for refuel amounts for now.
+
+    final_chart = (line_chart + event_points).properties(
+        title='Fuel Level Dynamics Along Route',
+        height=500
+    ).interactive() # Allow zooming and panning
+
+    st.altair_chart(final_chart, use_container_width=True)
+
+    # Map of route with stations
+    st.subheader("Route Map with Stations")
+
+    # Ensure pois_used is not empty before proceeding
+    if pois_used:
+        # Create a DataFrame from pois_used to easily get mean coordinates for map centering
+        map_data = pd.DataFrame(pois_used)
+
+
+        # Calculate mean coordinates, handling potential NaNs
+        center_lat = map_data['latitude'].mean(skipna=True)
+        center_lon = map_data['longitude'].mean(skipna=True)
+
+        # Check if centering coordinates are valid
+        if pd.isna(center_lat) or pd.isna(center_lon):
+            st.warning("Could not determine map center coordinates. Using a default location.")
+            # Fallback to a default location if mean calculation failed
+            m = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
+        else:
+            # Initialize the map centered on the mean coordinates of all points of interest
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
+
+        # Ensure price_min and price_max are available.
+        price_min = 2.5
+        price_max = 4.5
+
+        # Assuming price_min and price_max are calculated elsewhere before this block.
+        # Let's add a check for their existence and validity.
+        if 'price_min' not in locals() or 'price_max' not in locals() or price_min is None or price_max is None:
+            st.error("Price range (price_min, price_max) not calculated. Cannot color stations.")
+            # Set defaults or handle error appropriately
+            price_min = 2.5 # Default fallback
+            price_max = 4.5 # Default fallback
+            st.info(f"Using default price range: ${price_min:.2f} to ${price_max:.2f}")
+
+
+        # Now iterate through pois_used to add markers to the map with conditional coloring
+        for i, poi in enumerate(pois_used):
+            # --- Debugging: Check individual POI coordinates ---
+            # print(f"Processing POI {i}: {poi.get('name', 'Unnamed')}")
+            # print(f"  Latitude: {poi.get('latitude')}, Longitude: {poi.get('longitude')}")
+
+            latitude = poi.get('latitude')
+            longitude = poi.get('longitude')
+            name = poi.get('name', 'Unnamed Location')
+            price = poi.get('price_per_gallon', 0)
+            is_station = poi.get('is_station', False)
+            location_miles = poi.get('location_miles', 0)
+            stoppage_cost = poi.get('stoppage_cost', 0) # Include stoppage cost if available
+            
+
+            # Skip if coordinates are invalid
+            if latitude is None or longitude is None or pd.isna(latitude) or pd.isna(longitude):
+                st.warning(f"Skipping marker for '{name}' due to invalid coordinates: ({latitude}, {longitude})")
+                continue # Skip this POI and go to the next one
+
+            # Determine color based on whether it's a station and its price
+            if is_station:
+                # Apply gradient for stations
+                # Ensure price_max > price_min to avoid division by zero or issues with uniform prices
+                if price_max is not None and price_min is not None and price_max > price_min:
+                    try:
+                        norm = (price - price_min) / (price_max - price_min)
+                        # Clamp norm to [0, 1] to handle prices slightly outside the min/max range
+                        norm = max(0, min(1, norm))
+                        color = matplotlib.colors.rgb2hex(plt.cm.YlOrRd(norm))
+                    except Exception as e:
+                        st.warning(f"Error calculating color for station '{name}' (Price: {price:.2f}): {e}. Using gray.")
+                        color = 'gray' # Default color on error
+                else:
+                    # Default color if price range is zero or data is missing
+                    color = 'gray'
+                popup_text = f"<b>{name}</b><br>Price: ${price:.2f}/Gal<br>Distance: {location_miles:.2f} miles<br>Stoppage Cost: ${stoppage_cost:.2f}"
+                marker_color = color
+                fill_color = color
+                marker_radius = 5
+                marker_icon = None # Use default circle marker
+
+            else:
+                # Use a different color and potentially icon for non-station points (start/end)
+                if poi.get('id') == 'start':
+                    color = 'blue'
+                    popup_text = f"<b>Start: {name}</b><br>Distance: {location_miles:.2f} miles"
+                    marker_icon = 'play' # Example icon (requires Font Awesome)
+                    marker_radius = 7
+                elif poi.get('id') == 'end':
+                    color = 'green'
+                    popup_text = f"<b>End: {name}</b><br>Distance: {location_miles:.2f} miles"
+                    marker_icon = 'flag-checkered' # Example icon (requires Font Awesome)
+                    marker_radius = 7
+                else:
+                    # Default for any other non-station POI
+                    color = 'purple'
+                    popup_text = f"<b>{name}</b><br>Distance: {location_miles:.2f} miles"
+                    marker_icon = None
+                    marker_radius = 6
+
+                marker_color = color
+                fill_color = color # Use the same color for fill
+
+
+            # Add marker to the map
+            if marker_icon:
+                # Use a Marker with an icon for Start/End
+                folium.Marker(
+                    location=(latitude, longitude),
+                    popup=popup_text,
+                    icon=folium.Icon(color=marker_color, icon=marker_icon, prefix='fa') # Assuming Font Awesome icons
+                ).add_to(m)
+            else:
+                # Use a CircleMarker for stations or other points without specific icons
+                folium.CircleMarker(
+                    location=(latitude, longitude),
+                    radius=marker_radius,
+                    popup=popup_text,
+                    color=marker_color,
+                    fill=True,
+                    fill_color=fill_color,
+                    fill_opacity=0.7
+                ).add_to(m)
+
+        # Add the route line to the map (assuming 'geom' from OpenRouteService is available)
+        # This part was in your original code snippet, ensure it's placed before st_folium
+        # Example (uncomment if needed, ensure geom is available):
+        # if 'geom' in locals():
+        #      folium.GeoJson(geom, name=current_route.name, style_function=lambda x: {'color': 'blue', 'weight': 3}).add_to(m)
+        # else:
+        #      st.warning("Route geometry ('geom') not found. Route line will not be displayed.")
+
+
+        # Display map
+        st_data = st_folium(m, width=900, height=600)
+
+    else:
+        st.info("No points of interest available to display on the map.")
+
+
