@@ -21,19 +21,18 @@ class Truck:
         self.avg_consumption_gal_per_mile = avg_consumption_gal_per_mile
 
 class FuelStation: # Represents actual refueling stations
-    def __init__(self, id, name, location_miles, price_per_gallon, latitude, longitude, stoppage_cost=0.0):
+    def __init__(self, id, name, location_miles, price_per_gallon, latitude, longitude):
         self.id = str(id) 
         self.name = name
         self.location_miles = location_miles
         self.price_per_gallon = price_per_gallon
         self.latitude = latitude
         self.longitude = longitude
-        self.stoppage_cost = stoppage_cost # Cost incurred for stopping at the station (if any)
 
     def __repr__(self):
         return (f"FuelStation(id='{self.id}', name='{self.name}', "
                 f"location_miles={self.location_miles:.2f}, price_per_gallon={self.price_per_gallon:.3f}, "
-                f"latitude={self.latitude:.3f}, longitude={self.longitude:.3f}),  stoppage_cost={self.stoppage_cost:.2f})")
+                f"latitude={self.latitude:.3f}, longitude={self.longitude:.3f})")
 
 class Route:
     def __init__(self, name, start_location_miles, end_location_miles, station_ids_in_order):
@@ -44,7 +43,7 @@ class Route:
 
 # --- Helper function to load stations and identify endpoint from Excel ---
 @st.cache_data
-def load_stations_and_endpoint_from_excel(file_path, stoppage_cost, sheet_name=0, endpoint_store_no="-1"):
+def load_stations_and_endpoint_from_excel(file_path, sheet_name=0, endpoint_store_no="-1"):
     log_messages = []
     try:
         df = pd.read_excel(file_path, sheet_name=sheet_name)
@@ -103,15 +102,8 @@ def load_stations_and_endpoint_from_excel(file_path, stoppage_cost, sheet_name=0
                     log_messages.append(f"Warning: Station ID {station_id_str} (row {index+2}) has invalid or non-positive price: '{row[price_col_excel]}'. Assuming $0.0/Gal.")
                 else:
                     price_per_gallon = price_val
-            fuel_stations.append(FuelStation(
-                id=station_id_str,
-                name=station_name,
-                location_miles=current_row_location_miles,
-                price_per_gallon=price_per_gallon,
-                latitude=row[latitude_col] if latitude_col in df.columns else None,
-                longitude=row[longitude_col] if longitude_col in df.columns else None,
-                stoppage_cost=stoppage_cost
-            ))
+            fuel_stations.append(FuelStation(id=station_id_str, name=station_name, location_miles=current_row_location_miles, price_per_gallon=price_per_gallon, latitude=row[latitude_col], longitude=row[longitude_col]))
+
         except KeyError as e:
             log_messages.append(f"Warning: Missing expected column for row {index+2}. Error: {e}. Skipping this row.")
             continue
@@ -130,15 +122,15 @@ def get_station_by_id(station_id, all_stations):
     return None
 
 def optimize_fuel_stops(
-    truck, # Assuming Truck object with attributes like tank_capacity_gal, avg_consumption_gal_per_mile
-    route, # Assuming Route object with attributes like name, start_location_miles, end_location_miles, station_ids_in_order
-    all_stations_data: list, # List of Station objects, assuming each has id, name, location_miles, price_per_gallon, latitude, longitude, and stoppage_cost
+    truck: Truck,
+    route: Route,
+    all_stations_data: list, 
     start_fuel_gal: float,
     desired_end_fuel_gal: float,
     min_buffer_fuel_gal: float,
-    max_refueling_stops: int, # Keep parameter in function signature, but it will be ignored
+    max_refueling_stops: int,
     log_area=None): # Pass streamlit element for logging
-
+    
     start_city = routes[route.name]['cities'][0] if route.name in routes else "Unknown Start"
     end_city = routes[route.name]['cities'][-1] if route.name in routes else "Unknown End"
 
@@ -150,295 +142,198 @@ def optimize_fuel_stops(
         else:
             print(msg)
 
-    # --- Prepare Points of Interest (POIs) ---
     pois = []
     # Add the start point
     # Note: Using start_city coords for start point lat/lon - might need adjustment if route start is not exactly the city center
-    start_coords = cities_coords.get(start_city, (0, 0)) # Use .get for safety
     pois.append({
         'id': 'start',
-        'name': f'Start Route ({start_city})',
+        'name': 'Start Route',
         'location_miles': route.start_location_miles,
         'price_per_gallon': 0, # Price not relevant for start
         'stoppage_cost': 0, # Stoppage cost not relevant for start
-        'latitude': float(start_coords[1]), # Assuming cities_coords stores (lon, lat)
-        'longitude': float(start_coords[0]),
+        'latitude': float(cities_coords[start_city][1]), # Assuming cities_coords stores (lon, lat)
+        'longitude': float(cities_coords[start_city][0]),
         'is_station': False
     })
 
-    # Add relevant stations along the route
+    # Add relevant stations along the route        
     route_specific_stations_objects = []
     if all_stations_data:
         for station_id_on_route in route.station_ids_in_order:
             station_obj = get_station_by_id(station_id_on_route, all_stations_data)
             if station_obj:
-                 # Only consider stations strictly between the start and end locations for refueling stops
-                if route.start_location_miles < station_obj.location_miles < route.end_location_miles:
+                if route.start_location_miles <= station_obj.location_miles < route.end_location_miles:
                     route_specific_stations_objects.append(station_obj)
                 elif station_obj.location_miles == route.end_location_miles:
-                     _log(f"Info: Station {station_obj.name} (ID: {station_obj.id}) is at the exact destination location ({route.end_location_miles:.2f} miles) and will not be considered a refueling stop on the way.")
-                elif station_obj.location_miles <= route.start_location_miles:
-                     _log(f"Info: Station {station_obj.name} (ID: {station_obj.id}) at {station_obj.location_miles:.2f} miles is before or at the route's start ({route.start_location_miles:.2f} miles) and will be excluded.")
-                elif station_obj.location_miles >= route.end_location_miles :
-                    _log(f"Info: Station {station_obj.name} (ID: {station_obj.id}) at {station_obj.location_miles:.2f} miles is beyond or at the route's end ({route.end_location_miles:.2f} miles) and will be excluded.")
-            else:
+                    _log(f"Info: Station {station_obj.name} (ID: {station_obj.id}) is at the exact destination location ({route.end_location_miles:.2f} miles) and will not be considered a refueling stop on the way.")
+                elif station_obj.location_miles > route.end_location_miles :
+                    _log(f"Info: Station {station_obj.name} (ID: {station_obj.id}) at {station_obj.location_miles:.2f} miles is beyond the route's end ({route.end_location_miles:.2f} miles) and will be excluded.")
+            else: 
                 _log(f"Warning: Station ID '{station_id_on_route}' defined in route '{route.name}' not found in the provided list of all_stations_data.")
     else:
         _log("Info: No fuel stations provided to select from for the route.")
-
+    
     route_specific_stations_objects.sort(key=lambda s: s.location_miles)
     for station in route_specific_stations_objects:
-        # Ensure the Station object has a stoppage_cost attribute
-        stoppage_cost = station.stoppage_cost # Default to 0 if attribute not found
+        
         pois.append({
-            'id': station.id,
-            'name': station.name,
-            'location_miles': station.location_miles,
-            'price_per_gallon': station.price_per_gallon,
-            'stoppage_cost': stoppage_cost, # Include stoppage cost
+            'id': station.id, 
+            'name': station.name, 
+            'location_miles': station.location_miles, 
+            'price_per_gallon': station.price_per_gallon, 
             'latitude': float(station.latitude),
             'longitude': float(station.longitude),
             'is_station': True
         })
 
-    # Add the end point
-    # Using end_city coords for end point lat/lon
-    end_coords = cities_coords.get(end_city, (0, 0)) # Use .get for safety
-    pois.append({
-        'id': 'end',
-        'name': f'End Route ({end_city})',
-        'location_miles': route.end_location_miles,
-        'price_per_gallon': 0, # Price not relevant for end
-        'stoppage_cost': 0, # Stoppage cost not relevant for end
-        'latitude': float(end_coords[1]), # Assuming cities_coords stores (lon, lat)
-        'longitude': float(end_coords[0]),
-        'is_station': False
-    })
-
-    # Ensure unique POIs, prioritizing stations or start/end at the same location
+    pois.append({'id': 'end', 'name': 'End Route (Destination)', 'location_miles': route.end_location_miles, 'price_per_gallon': 0, 'latitude': float(cities_coords[start_city][0]), 'longitude': float(cities_coords[start_city][1]), 'is_station': False})
+    
     unique_pois_dict = {}
     for p in sorted(pois, key=lambda x: (x['location_miles'], not x['is_station'])):
         loc = p['location_miles']
         if loc not in unique_pois_dict:
             unique_pois_dict[loc] = p
-        # If a station is at the exact same location as a non-station (like start/end),
-        # prioritize the station if it's not the start/end itself.
-        # Or if a start/end is at the same location as a non-station (which shouldn't happen if logic is right)
-        elif p['is_station'] and not unique_pois_dict[loc]['is_station']:
-             # If the existing POI at this location is not a station, replace it with the station
-             unique_pois_dict[loc] = p
+        elif p['is_station'] and not unique_pois_dict[loc]['is_station']: 
+            unique_pois_dict[loc] = p
         elif (p['id'] == 'start' or p['id'] == 'end') and not unique_pois_dict[loc]['is_station']:
-             # If the existing POI is not a station and the current one is start/end, keep the start/end
              unique_pois_dict[loc] = p
-        # If both are stations or both are non-stations at the same location, the first one encountered (sorted) is kept.
 
     pois = sorted(list(unique_pois_dict.values()), key=lambda p_item: p_item['location_miles'])
-
+    
     num_pois = len(pois)
     if num_pois < 2:
         _log("Error: Route must have at least a start and end point after processing POIs.")
         return None, op_log, None, None
-
-    # Identify indices of actual fuel stations in the final sorted POI list
+    
     actual_station_poi_indices = [i for i, p_item in enumerate(pois) if p_item['is_station']]
     _log(f"Number of Points of Interest (POIs) for optimization: {num_pois}")
     _log(f"Number of actual fuel stations among POIs: {len(actual_station_poi_indices)}")
 
-    # --- Set up the PuLP problem ---
     prob = pulp.LpProblem(f"FuelOptimization_{truck.name}_{route.name}", pulp.LpMinimize)
 
-    # Decision variables
     fuel_purchased_gal = pulp.LpVariable.dicts("FuelPurchasedGal", range(num_pois), lowBound=0, cat='Continuous')
     fuel_at_arrival_gal = pulp.LpVariable.dicts("FuelAtArrivalGal", range(num_pois), lowBound=min_buffer_fuel_gal, upBound=truck.tank_capacity_gal, cat='Continuous')
     fuel_after_purchase_gal = pulp.LpVariable.dicts("FuelAfterPurchaseGal", range(num_pois), lowBound=min_buffer_fuel_gal, upBound=truck.tank_capacity_gal, cat='Continuous')
 
-    # Binary variable for stop decision (only for actual stations)
     stop_decision = {}
     if actual_station_poi_indices:
         stop_decision = pulp.LpVariable.dicts("StopDecision", actual_station_poi_indices, cat='Binary')
     else:
         _log("Info: No actual fuel stations identified on the route for optimization variables.")
 
-
-    # --- Objective Function: Minimize Total Cost (Fuel Cost + Stoppage Cost) ---
     total_cost = pulp.LpAffineExpression()
     for i in range(num_pois):
-        if pois[i]['is_station']:
-            # Add fuel purchase cost
-            if i not in actual_station_poi_indices:
-                 _log(f"CRITICAL LOGIC ERROR: POI {i} ('{pois[i]['name']}') is_station=True but not in actual_station_poi_indices. Skipping cost calculation for this POI.")
-                 continue
+        if pois[i]['is_station']: 
+            if i not in actual_station_poi_indices: 
+                _log(f"CRITICAL LOGIC ERROR: POI {i} ('{pois[i]['name']}') is_station=True but not in actual_station_poi_indices.")
+                continue 
             total_cost += fuel_purchased_gal[i] * pois[i]['price_per_gallon']
-            # Add stoppage cost if a stop is made
-            if i in stop_decision: # Ensure stop_decision variable exists for this index
-                 total_cost += pois[i]['stoppage_cost'] * stop_decision[i]
-            else:
-                 _log(f"Warning: POI {i} ('{pois[i]['name']}') is a station but no stop_decision variable found. Stoppage cost will not be included for this station.")
+    prob += total_cost, "TotalFuelCost"
 
-    prob += total_cost, "TotalFuelAndStoppageCost"
-
-
-    # --- Constraints ---
-
-    # Initial fuel at the start
     if not (pois[0]['id'] == 'start' and pois[0]['location_miles'] == route.start_location_miles):
         _log(f"Error: First POI is not the route start. POI[0]: {pois[0]}. Route Start: {route.start_location_miles}")
         return None, op_log, None, None
     prob += fuel_at_arrival_gal[0] == start_fuel_gal, "InitialFuelConstraint"
-    prob += fuel_after_purchase_gal[0] == fuel_at_arrival_gal[0], "NoPurchaseAtStartConstraint" # Cannot purchase fuel at the start point
+    prob += fuel_after_purchase_gal[0] == fuel_at_arrival_gal[0], "NoPurchaseAtStartConstraint"
     prob += fuel_purchased_gal[0] == 0, f"ZeroPurchaseAtStartPOI"
 
-
     for i in range(num_pois):
-        # Fuel balance after purchase (only for stations)
-        if pois[i]['is_station']:
-             if i not in actual_station_poi_indices or i not in stop_decision:
-                 _log(f"Critical Error during constraint setup: POI {i} ({pois[i]['name']}) is station but has inconsistent setup for stop_decision. Skipping constraints for this POI.")
-                 continue
-             prob += fuel_after_purchase_gal[i] == fuel_at_arrival_gal[i] + fuel_purchased_gal[i], f"FuelBalanceAfterPurchase_{pois[i]['id']}"
-
-             # Link purchase amount to stop decision for stations
-             prob += fuel_purchased_gal[i] <= truck.tank_capacity_gal * stop_decision[i], f"LinkPurchaseToStopDecisionUpper_{pois[i]['id']}"
-             # If stop_decision is 1, must purchase at least a minimal amount (e.g., 0.01 gal) to avoid numerical issues
-             prob += fuel_purchased_gal[i] >= 0.01 * stop_decision[i], f"LinkPurchaseToStopDecisionLower_{pois[i]['id']}"
-             # Cannot purchase more than tank capacity minus fuel on arrival
-             prob += fuel_purchased_gal[i] <= truck.tank_capacity_gal - fuel_at_arrival_gal[i], f"PurchaseCapacityLimit_{pois[i]['id']}"
-        else:
-            # No purchase at non-station points (start/end)
+        if pois[i]['is_station']: 
+            if i not in actual_station_poi_indices or i not in stop_decision:
+                _log(f"Critical Error during constraint setup: POI {i} ({pois[i]['name']}) is station but has inconsistent setup for stop_decision.")
+                return None, op_log, None, None 
+            prob += fuel_after_purchase_gal[i] == fuel_at_arrival_gal[i] + fuel_purchased_gal[i], f"FuelBalanceAfterPurchase_{pois[i]['id']}"
+            prob += fuel_purchased_gal[i] <= truck.tank_capacity_gal * stop_decision[i], f"LinkPurchaseToStopDecisionUpper_{pois[i]['id']}"
+            prob += fuel_purchased_gal[i] >= 0.01 * stop_decision[i], f"LinkPurchaseToStopDecisionLower_{pois[i]['id']}" 
+            prob += fuel_purchased_gal[i] <= truck.tank_capacity_gal - fuel_at_arrival_gal[i], f"PurchaseCapacityLimit_{pois[i]['id']}"
+        else: 
             prob += fuel_after_purchase_gal[i] == fuel_at_arrival_gal[i], f"NoPurchaseNonStation_{pois[i]['id']}"
             prob += fuel_purchased_gal[i] == 0, f"ZeroPurchaseNonStation_{pois[i]['id']}"
 
-
-        # Fuel flow between consecutive points
-        if i < num_pois - 1:
+        if i < num_pois - 1: 
             dist_to_next_miles = pois[i+1]['location_miles'] - pois[i]['location_miles']
-            if dist_to_next_miles < 0:
+            if dist_to_next_miles < 0: 
                 _log(f"Error: Negative distance from POI {i} ('{pois[i]['name']}') to POI {i+1} ('{pois[i+1]['name']}'). Dist: {dist_to_next_miles:.2f} miles. POIs not sorted correctly.")
                 return None, op_log, None, None
-
+            
             fuel_needed_for_segment_gal = dist_to_next_miles * truck.avg_consumption_gal_per_mile
             prob += fuel_at_arrival_gal[i+1] == fuel_after_purchase_gal[i] - fuel_needed_for_segment_gal, f"FuelFlow_{pois[i]['id']}_to_{pois[i+1]['id']}"
-
-            # Must have enough fuel to reach the next point with buffer
             prob += fuel_after_purchase_gal[i] >= fuel_needed_for_segment_gal + min_buffer_fuel_gal, f"SufficientFuelForSegment_{pois[i]['id']}_to_{pois[i+1]['id']}"
 
-
-    # Desired fuel at the end point
     if not (pois[num_pois-1]['id'] == 'end' and pois[num_pois-1]['location_miles'] == route.end_location_miles):
         _log(f"Error: Last POI is not the route end. POI[{num_pois-1}]: {pois[num_pois-1]}. Route End: {route.end_location_miles}")
         return None, op_log, None, None
     prob += fuel_at_arrival_gal[num_pois-1] >= desired_end_fuel_gal, "DesiredEndFuelConstraint"
 
-    # Maximum number of refueling stops
-    # REMOVED as requested: prob += pulp.lpSum(stop_decision[idx] for idx in actual_station_poi_indices) <= max_refueling_stops, "MaxStopsConstraint"
-    # Added a log message indicating the constraint is removed if max_refueling_stops is provided
-    if actual_station_poi_indices and max_refueling_stops > 0:
-         _log(f"Info: Maximum refueling stops constraint ({max_refueling_stops}) is ignored as requested.")
-    elif not actual_station_poi_indices and max_refueling_stops > 0:
-         _log(f"Info: Max stops constraint ({max_refueling_stops}) is set, but no fuel stations are part of the optimization POIs. Constraint is trivially satisfied.")
-
-
-    # --- Solve the problem ---
-    solver_to_use = pulp.PULP_CBC_CMD(msg=0) # Use CBC solver, suppress output
+    if actual_station_poi_indices and stop_decision: 
+        prob += pulp.lpSum(stop_decision[idx] for idx in actual_station_poi_indices) <= max_refueling_stops, "MaxStopsConstraint"
+    elif not actual_station_poi_indices and max_refueling_stops >=0 :
+        _log(f"Info: Max stops constraint ({max_refueling_stops}) is set, but no fuel stations are part of the optimization POIs.")
+    
+    solver_to_use = pulp.PULP_CBC_CMD(msg=0)
     try:
         status = prob.solve(solver_to_use)
     except pulp.apis.core.PulpSolverError as e:
         _log(f"PulpSolverError occurred: {e}. Ensure solver (CBC) is installed and in PATH.")
         return None, op_log, None, None
-    except Exception as e:
-         _log(f"An unexpected error occurred during solving: {e}")
-         return None, op_log, None, None
 
-
-    # --- Process Results ---
     if pulp.LpStatus[status] == "Optimal":
         _log("\nOptimal solution found!")
-
-        # Calculate the actual number of stops made
+        
         stops_made_val = 0
-        if actual_station_poi_indices and stop_decision:
-             # Ensure we only sum values for indices that are actually in stop_decision
-             stops_made_val = sum(pulp.value(stop_decision[idx]) for idx in actual_station_poi_indices if idx in stop_decision and pulp.value(stop_decision[idx]) is not None)
-             # Round the stop count as it should be an integer from the binary variable
-             stops_made_val = round(stops_made_val)
-
+        if actual_station_poi_indices and stop_decision: 
+            stops_made_val = sum(pulp.value(stop_decision[idx]) for idx in actual_station_poi_indices if idx in stop_decision and pulp.value(stop_decision[idx]) is not None)
 
         solution = {
-            'total_cost': pulp.value(prob.objective), # This now includes fuel cost + stoppage costs
+            'total_cost': pulp.value(prob.objective),
             'truck': truck.name,
             'route': route.name,
             'stops_made_count': stops_made_val,
-            'stops': [] # List to detail the actual refueling stops
+            'stops': []
         }
-
-        _log(f"Total Trip Cost (Fuel + Stops): ${solution['total_cost']:.2f}")
-        _log(f"Number of refueling stops made: {solution['stops_made_count']:.0f} (Max allowed input: {max_refueling_stops})") # Keep max allowed input in log for context
-
-        # Prepare detailed plan for display/table
+        
+        _log(f"Total Fuel Cost: ${solution['total_cost']:.2f}")
+        _log(f"Number of refueling stops made: {solution['stops_made_count']:.0f} (Max allowed: {max_refueling_stops})")
+        
         detailed_plan_for_table = []
-        # Header row for the table
-        header_plan = {'Location':'Location', 'Distance (Miles)':'Distance (Miles)', 'Arrival Fuel (Gal)':'Arrival Fuel (Gal)', 'Purchased Fuel (Gal)':'Purchased Fuel (Gal)', 'Depart Fuel (Gal)':'Depart Fuel (Gal)', 'Fuel Cost ($)':'Fuel Cost ($)', 'Stoppage Cost ($)':'Stoppage Cost ($)', 'Total Cost at POI ($)':'Total Cost at POI ($)', 'Price ($/Gal)':'Price ($/Gal)'}
+        header_plan = {'Location':'Location', 'Arrival Fuel (Gal)':'Arrival Fuel (Gal)', 'Purchased Fuel (Gal)':'Purchased Fuel (Gal)', 'Depart Fuel (Gal)':'Depart Fuel (Gal)', 'Cost ($)':'Cost ($)', 'Price ($/Gal)':'Price ($/Gal)'}
         detailed_plan_for_table.append(header_plan)
 
 
         for i in range(num_pois):
             poi_name = pois[i]['name']
-            poi_location_miles = pois[i]['location_miles']
-
-            # Get values from LP variables, handle None if optimization failed partially (though status is Optimal)
             arr_fuel_val = pulp.value(fuel_at_arrival_gal[i])
             arr_fuel = arr_fuel_val if arr_fuel_val is not None else 0.0
-
+            
             pur_fuel = 0.0
-            fuel_cost_at_stop = 0.0
-            stoppage_cost_at_stop = 0.0
-            total_cost_at_poi = 0.0
-            price_at_stop_str = "-"
-            is_stop_decision_one = False # Flag to check if a stop was decided at this station
-
             if pois[i]['is_station']:
                 var_value = pulp.value(fuel_purchased_gal[i])
-                if var_value is not None:
-                    pur_fuel = var_value
-                else:
-                    _log(f"Warning: fuel_purchased_gal[{i}] value is None for station {poi_name}. Assuming 0.")
-
-                price_at_stop = pois[i]['price_per_gallon']
-                price_at_stop_str = f"{price_at_stop:.3f}"
-
-                # Check the stop decision binary variable value
-                if i in stop_decision:
-                    stop_decision_val = pulp.value(stop_decision[i])
-                    if stop_decision_val is not None and round(stop_decision_val) == 1: # Round to handle potential floating point results near 0 or 1
-                        is_stop_decision_one = True
-
-                # Calculate costs only if a stop was decided and fuel was purchased (or it's a stop with zero purchase, though less likely)
-                # The LP constraints link purchase to stop_decision, so if stop_decision is 1, purchase should be > 0.001
-                if is_stop_decision_one: # or pur_fuel > 0.001: # Consider a stop made if decision is 1 OR minimal fuel purchased
-                     fuel_cost_at_stop = pur_fuel * price_at_stop
-                     stoppage_cost_at_stop = pois[i]['stoppage_cost'] # Add the fixed stoppage cost
-                     total_cost_at_poi = fuel_cost_at_stop + stoppage_cost_at_stop
-
-
+                if var_value is not None: pur_fuel = var_value
+                else: _log(f"Warning: fuel_purchased_gal[{i}] value is None for station {poi_name}. Assuming 0.")
+            
             dep_fuel_val = pulp.value(fuel_after_purchase_gal[i])
             dep_fuel = dep_fuel_val if dep_fuel_val is not None else 0.0
 
-            # Append data for the detailed plan table
+            cost_at_stop = pur_fuel * pois[i]['price_per_gallon'] if pois[i]['is_station'] and pur_fuel > 0.001 else 0.0
+            price_at_stop_str = f"{pois[i]['price_per_gallon']:.3f}" if pois[i]['is_station'] else "-"
+            
             detailed_plan_for_table.append({
-                'Location':poi_name,
-                'Distance (Miles)':f"{poi_location_miles:.2f}",
-                'Arrival Fuel (Gal)':f"{arr_fuel:.2f}",
-                'Purchased Fuel (Gal)':f"{pur_fuel:.2f}",
-                'Depart Fuel (Gal)':f"{dep_fuel:.2f}",
-                'Fuel Cost ($)':f"{fuel_cost_at_stop:.2f}",
-                'Stoppage Cost ($)':f"{stoppage_cost_at_stop:.2f}",
-                'Total Cost at POI ($)':f"{total_cost_at_poi:.2f}",
+                'Location':poi_name, 
+                'Arrival Fuel (Gal)':f"{arr_fuel:.2f}", 
+                'Purchased Fuel (Gal)':f"{pur_fuel:.2f}", 
+                'Depart Fuel (Gal)':f"{dep_fuel:.2f}", 
+                'Cost ($)':f"{cost_at_stop:.2f}", 
                 'Price ($/Gal)':price_at_stop_str
             })
-
-            # Add details to the 'stops' list if a stop was made
-            if is_stop_decision_one and pur_fuel > 0.001 : # Only include stops where fuel was actually purchased (more than minimal)
-                 solution['stops'].append({
+            
+            is_stop_decision_one = False
+            if pois[i]['is_station'] and i in stop_decision: 
+                stop_decision_val = pulp.value(stop_decision[i])
+                if stop_decision_val is not None and stop_decision_val == 1:
+                    is_stop_decision_one = True
+            
+            if is_stop_decision_one and pur_fuel > 0.001 : 
+                solution['stops'].append({
                     'station_id': pois[i]['id'],
                     'station_name': poi_name,
                     'location_miles': pois[i]['location_miles'],
@@ -446,35 +341,22 @@ def optimize_fuel_stops(
                     'fuel_purchased_gal': round(pur_fuel,2),
                     'fuel_after_purchase_gal': round(dep_fuel,2),
                     'price_per_gallon': pois[i]['price_per_gallon'],
-                    'stoppage_cost_at_stop': round(stoppage_cost_at_stop, 2), # Include stoppage cost in stop details
-                    'cost_for_stop': round(total_cost_at_poi,2), # Total cost for this stop
+                    'cost_for_stop': round(cost_at_stop,2),
                     'station_latitude': pois[i]['latitude'],
                     'station_longitude': pois[i]['longitude']
-                 })
-
+                })
         solution['full_plan_table_data'] = detailed_plan_for_table
-
-        # Return the solution, logs, processed POIs, and LP variables
-        pulp_vars_values = {
-            'arrival': {i: pulp.value(fuel_at_arrival_gal[i]) for i in range(num_pois)},
-            'after_purchase': {i: pulp.value(fuel_after_purchase_gal[i]) for i in range(num_pois)},
-            'purchased': {i: pulp.value(fuel_purchased_gal[i]) for i in range(num_pois)},
-            'stop_decision': {i: pulp.value(stop_decision[i]) for i in actual_station_poi_indices if i in stop_decision} # Store values for stop decisions
-        }
-        # Note: We store the *values* of the LP variables, not the PuLP variable objects themselves,
-        # as PuLP objects are not designed to be pickled/stored in session state.
-
-        return solution, op_log, pois, pulp_vars_values # Return variable values
-
+        
+        pulp_vars = {'arrival': fuel_at_arrival_gal, 'after_purchase': fuel_after_purchase_gal, 'purchased': fuel_purchased_gal, 'stop_decision': stop_decision}
+        return solution, op_log, pois, pulp_vars
     else:
-        # Optimization failed
         _log(f"Optimization failed. Status: {pulp.LpStatus[status]}")
-        # Optional: Write the LP problem to a file for debugging
         # debug_file = f"fuel_problem_debug_{truck.name}_{route.name.replace(' ','_')}.lp"
         # try: prob.writeLP(debug_file); _log(f"Problem written to {debug_file}.")
         # except Exception as e_lp: _log(f"Could not write LP file: {e_lp}")
-        return None, op_log, None, None # Return None for solution and vars on failure
+        return None, op_log, None, None
 
+# --- END OF ADAPTED CORE LOGIC ---
 
 
 # --- Streamlit App Starts Here ---
@@ -504,7 +386,7 @@ with st.sidebar:
     start_fuel = st.number_input("Starting Fuel (Gallons)", min_value=0.0, max_value=truck_tank_cap, value=100.0, step=5.0)
     desired_end_fuel = st.number_input("Desired Fuel at Destination (Gallons)", min_value=0.0, max_value=truck_tank_cap, value=150.0, step=5.0)
     safety_buffer = st.number_input("Safety Buffer Fuel (Gallons)", min_value=0.0, max_value=truck_tank_cap/2, value=70.0, step=5.0)
-    stoppage_cost = st.number_input("Stoppage cost", min_value=0, max_value=1000, value=10, step=1)
+    max_stops = st.number_input("Max Refueling Stops Allowed", min_value=0, max_value=20, value=7, step=1)
 
     run_button = st.button("Run Optimization")
 
@@ -521,7 +403,7 @@ if run_button:
     if default_excel_file is None :
         all_logs.append(f"No file uploaded, using default: {default_excel_file}")
     
-    all_fuel_stations, city_endpoint, load_logs = load_stations_and_endpoint_from_excel(excel_to_load, stoppage_cost)
+    all_fuel_stations, city_endpoint, load_logs = load_stations_and_endpoint_from_excel(excel_to_load)
     all_logs.extend(load_logs)
 
     if not city_endpoint:
@@ -554,6 +436,7 @@ if run_button:
 
     all_logs.append(f"Truck: {my_truck.name}, Capacity={my_truck.tank_capacity_gal:.1f} Gal, Consumption={my_truck.avg_consumption_gal_per_mile:.4f} Gal/Mile ({1/my_truck.avg_consumption_gal_per_mile:.1f} MPG)")
     all_logs.append(f"Fuel Parameters: Start={start_fuel:.1f} Gal, Desired End at {city_endpoint['name']}={desired_end_fuel:.1f} Gal, Safety Buffer={safety_buffer:.1f} Gal")
+    all_logs.append(f"Constraints: Max Refueling Stops Allowed={max_stops}")
     
     log_placeholder.text("\n".join(all_logs) + "\nRunning PuLP optimizer...")
 
@@ -565,7 +448,7 @@ if run_button:
         start_fuel_gal=start_fuel,
         desired_end_fuel_gal=desired_end_fuel,
         min_buffer_fuel_gal=safety_buffer,
-        max_refueling_stops=10, # Ignored in the function, but kept for clarity
+        max_refueling_stops=max_stops
     )
     all_logs.extend(opt_logs)
 
@@ -582,9 +465,8 @@ if run_button:
         st.session_state['truck_tank_cap'] = truck_tank_cap
         st.session_state['safety_buffer'] = safety_buffer
         st.session_state['desired_end_fuel'] = desired_end_fuel
-        st.session_state['stoppage_cost'] = stoppage_cost
+        st.session_state['max_stops'] = max_stops
         st.session_state['start_fuel'] = start_fuel
-        st.session_state['len_stops'] = len(solution_data['stops'])
 
     else:
         st.error("Optimization failed or no solution found. Check logs for details.")
@@ -615,17 +497,15 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
     truck_tank_cap = st.session_state['truck_tank_cap']
     safety_buffer = st.session_state['safety_buffer']
     desired_end_fuel = st.session_state['desired_end_fuel']
-    stoppage_cost = st.session_state['stoppage_cost']
+    max_stops = st.session_state['max_stops']
     start_fuel = st.session_state['start_fuel']
-    len_stops = st.session_state['len_stops']
-
     
     # Show success message
     st.success("Optimization Successful!")
 
     col1, col2 = st.columns(2)
     col1.metric("Total Fuel Cost", f"${solution_data['total_cost']:.2f}")
-    col2.metric("No. of Stops", f"{len_stops}")
+    col2.metric("Refueling Stops Made", f"{solution_data['stops_made_count']:.0f} (Max: {max_stops})")
 
     st.subheader("Fueling Plan Details")
     # Convert list of dicts (with header as first dict) to DataFrame for st.table
@@ -716,6 +596,7 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
     ).encode(
         x='Distance:Q',
         y='Fuel:Q',
+        tooltip=['Distance', 'Fuel', 'Event', 'Label'],
         shape=alt.Shape('Event:N', legend=alt.Legend(title="Events"))
     ).interactive()
     
@@ -761,6 +642,9 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
 
         # Now iterate through pois_used to add markers to the map with conditional coloring
         for i, poi in enumerate(pois_used):
+            # --- Debugging: Check individual POI coordinates ---
+            # print(f"Processing POI {i}: {poi.get('name', 'Unnamed')}")
+            # print(f"  Latitude: {poi.get('latitude')}, Longitude: {poi.get('longitude')}")
 
             latitude = poi.get('latitude')
             longitude = poi.get('longitude')
@@ -838,10 +722,7 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
                     color=marker_color,
                     fill=True,
                     fill_color=fill_color,
-                    fill_opacity=0.7,
-                    tooltip=(f"Store: {name}<br>"
-                            f"Price: ${price:.2f}<br>"
-                            f"Distance from Start: {location_miles:.1f} mi")
+                    fill_opacity=0.7
                 ).add_to(m)
 
 
@@ -871,7 +752,16 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
                         fill_opacity=0.3,
                         weight=2
                     ).add_to(m)
-                    
+
+        # Add the route line to the map (assuming 'geom' from OpenRouteService is available)
+        # This part was in your original code snippet, ensure it's placed before st_folium
+        # Example (uncomment if needed, ensure geom is available):
+        # if 'geom' in locals():
+        #      folium.GeoJson(geom, name=current_route.name, style_function=lambda x: {'color': 'blue', 'weight': 3}).add_to(m)
+        # else:
+        #      st.warning("Route geometry ('geom') not found. Route line will not be displayed.")
+
+
         # Display map
         st_data = st_folium(m, width=900, height=600)
 
