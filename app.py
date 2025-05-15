@@ -362,12 +362,15 @@ def optimize_fuel_stops(
              # Round the stop count as it should be an integer from the binary variable
              stops_made_val = round(stops_made_val)
 
+        print(f"################### fuel_cost: {pulp.value(total_cost) - stops_made_val*stoppage_cost}") # Keep max allowed input in log for context
 
         solution = {
             'total_cost': pulp.value(prob.objective), # This now includes fuel cost + stoppage costs
+            'fuel_cost': pulp.value(total_cost) - stops_made_val*stoppage_cost, # Total cost from the objective function
             'truck': truck.name,
             'route': route.name,
             'stops_made_count': stops_made_val,
+            'total_fuel_filled': 0,
             'stops': [] # List to detail the actual refueling stops
         }
 
@@ -451,6 +454,7 @@ def optimize_fuel_stops(
                     'station_latitude': pois[i]['latitude'],
                     'station_longitude': pois[i]['longitude']
                  })
+                 solution['total_fuel_filled'] += pur_fuel # Accumulate total fuel filled
 
         solution['full_plan_table_data'] = detailed_plan_for_table
 
@@ -489,12 +493,12 @@ with st.sidebar:
     
     selected_route_name = st.selectbox("Choose a Route:", list(routes.keys())) 
     default_excel_file = routes[selected_route_name]['default_file'] if selected_route_name in routes else None
-    st.info(f"Default Excel file for this route: {default_excel_file}")
+    # st.info(f"Default Excel file for this route: {default_excel_file}")
    
     endpoint_store_no = -1 #st.text_input("Endpoint 'Store No' in Excel", "-1", help="The 'Store No' that identifies your destination in the Excel file.")
 
     st.subheader("Truck Parameters")
-    truck_name = st.text_input("Truck Name/ID", "FreightlinerImperial")
+    truck_name = 'Frightliner' #st.text_input("Truck Name/ID", "FreightlinerImperial")
     truck_tank_cap = st.number_input("Tank Capacity (Gallons)", min_value=10.0, max_value=500.0, value=240.0, step=10.0)
     truck_mpg = st.number_input("Fuel Efficiency (Miles per Gallon - MPG)", min_value=1.0, max_value=20.0, value=7.0, step=0.1)
     gpm = 1.0 / truck_mpg if truck_mpg > 0 else 0.2 # gallons per mile
@@ -623,9 +627,10 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
     # Show success message
     st.success("Optimization Successful!")
 
-    col1, col2 = st.columns(2)
-    col1.metric("Total Fuel Cost", f"${solution_data['total_cost']:.2f}")
-    col2.metric("No. of Stops", f"{len_stops}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Fuel Cost", f"${solution_data['fuel_cost']:.2f}")
+    col2.metric("Total Gallons", f"{solution_data['total_fuel_filled']:.2f}")
+    col3.metric("No. of Stops", f"{len_stops}")
 
     st.subheader("Fueling Plan Details")
     # Convert list of dicts (with header as first dict) to DataFrame for st.table
@@ -742,8 +747,8 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
         us_center_lat = 39.8283
         us_center_lon = -88.5795
 
-        # Use US center if requested or if mean coordinates are invalid
-        m = folium.Map(location=[us_center_lat, us_center_lon], zoom_start=4)
+        # Use US center if requested or if mean coordinates are invalid and satellite view is selected
+        m = folium.Map(location=[us_center_lat, us_center_lon], zoom_start=4, control_scale=True)
 
         # Ensure price_min and price_max are available.
         price_min = 2.5
@@ -785,7 +790,7 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
                         norm = (price - price_min) / (price_max - price_min)
                         # Clamp norm to [0, 1] to handle prices slightly outside the min/max range
                         norm = max(0, min(1, norm))
-                        color = matplotlib.colors.rgb2hex(plt.cm.YlOrRd(norm))
+                        color = matplotlib.colors.rgb2hex(plt.cm.inferno(norm))
                     except Exception as e:
                         st.warning(f"Error calculating color for station '{name}' (Price: {price:.2f}): {e}. Using gray.")
                         color = 'gray' # Default color on error
@@ -801,12 +806,12 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
             else:
                 # Use a different color and potentially icon for non-station points (start/end)
                 if poi.get('id') == 'start':
-                    color = 'blue'
+                    color = 'green'
                     popup_text = f"<b>Start: {name}</b><br>Distance: {location_miles:.2f} miles"
                     marker_icon = 'play' # Example icon (requires Font Awesome)
                     marker_radius = 7
                 elif poi.get('id') == 'end':
-                    color = 'green'
+                    color = 'red'
                     popup_text = f"<b>End: {name}</b><br>Distance: {location_miles:.2f} miles"
                     marker_icon = 'flag-checkered' # Example icon (requires Font Awesome)
                     marker_radius = 7
@@ -858,7 +863,7 @@ if 'solution_data' in st.session_state and 'pois_used' in st.session_state:
                                   <b>Purchase: {stop['fuel_purchased_gal']:.2f} Gal</b><br>
                                   Departure Fuel: {stop['fuel_after_purchase_gal']:.2f} Gal<br>
                                   <b>Cost: ${stop['cost_for_stop']:.2f}</b>""",
-                        icon=folium.Icon(color='green', icon='gas-pump', prefix='fa')
+                        icon=folium.Icon(color='blue', icon='gas-pump', prefix='fa')
                     ).add_to(m)
                     
                     # Add a circle to make it even more visible
